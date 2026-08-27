@@ -193,6 +193,45 @@ $Archive = Join-Path $Db $Asset
 $Marker  = Join-Path $Db 'da_animations.txt'
 $VerFile = Join-Path $Db 'da_animations_version.txt'
 
+# --- ФАЙЛЫ, ПЕРЕКРЫВАЮЩИЕ МОДУЛЬ ------------------------------------------------------------
+#
+# Два скрипта модуля лежат в базовой сборке РОССЫПЬЮ, а россыпь в X-Ray перекрывает архив.
+# Значит наши версии этих файлов не применялись бы никогда: архив подключается, но проигрывает
+# файлу на диске. Заплатки внутри самих скриптов эту беду не лечат — до нашего кода дело просто
+# не доходит.
+#
+# Поэтому на время работы модуля отодвигаем базовые копии в сторону, а при выключении и удалении
+# возвращаем на место. Переименование, а не удаление: чужой файл мы не вправе терять.
+$Shadowed = @('scripts\da_item_anims.script', 'scripts\enhanced_animations.script')
+$ShadowSuffix = '.da_anim_backup'
+
+function Shadow-Aside {
+    $n = 0
+    foreach ($rel in $Shadowed) {
+        $live = Join-Path (Join-Path $Root 'gamedata') $rel
+        $bak  = $live + $ShadowSuffix
+        if ((Test-Path $live) -and -not (Test-Path $bak)) {
+            Move-Item $live $bak -Force -ErrorAction SilentlyContinue
+            if (Test-Path $bak) { $n++ }
+        }
+    }
+    if ($n) { Say "  Базовых копий отодвинуто: $n (вернутся при выключении)." 'DarkGray' }
+}
+
+function Shadow-Restore {
+    $n = 0
+    foreach ($rel in $Shadowed) {
+        $live = Join-Path (Join-Path $Root 'gamedata') $rel
+        $bak  = $live + $ShadowSuffix
+        if (Test-Path $bak) {
+            if (Test-Path $live) { Remove-Item $live -Force -ErrorAction SilentlyContinue }
+            Move-Item $bak $live -Force -ErrorAction SilentlyContinue
+            if (Test-Path $live) { $n++ }
+        }
+    }
+    if ($n) { Say "  Базовых копий возвращено: $n." 'DarkGray' }
+}
+
 # --- ЧТО СЕЙЧАС СТОИТ -----------------------------------------------------------------------
 $installed = Test-Path $Archive
 $disabled  = (Test-Path $Marker) -and ((ReadText $Marker) -match 'off')
@@ -230,9 +269,11 @@ if ($choice -eq '0' -or $choice -eq '') { exit 0 }
 if ($installed -and $choice -eq '2') {
     if ($disabled) {
         Remove-Item $Marker -Force -ErrorAction SilentlyContinue
+        Shadow-Aside
         Say ''; Say '  Модуль включён. Перезапустите игру.' 'Green'
     } else {
         WriteText $Marker "off`r`n"
+        Shadow-Restore
         Say ''; Say '  Модуль выключен. Перезапустите игру.' 'Yellow'
         Say '  Файлы остались на диске — включить обратно можно этим же скриптом.' 'DarkGray'
     }
@@ -254,6 +295,7 @@ if ($installed -and $choice -eq '3') {
     foreach ($f in @($Archive, $Marker, $VerFile)) {
         if (Test-Path $f) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
     }
+    Shadow-Restore
     Say ''; Say '  Модуль удалён. Перезапустите игру.' 'Green'
     Say ''; Read-Host 'Enter — выход'; exit 0
 }
@@ -411,6 +453,10 @@ try {
 }
 
 WriteText $VerFile "$tag`r`n"
+
+# Базовые копии перекрывающих файлов отодвигаем только если модуль не выключен: у
+# выключенного архива подменять нечего, и игра должна работать на своих файлах.
+if (-not $disabled) { Shadow-Aside } else { Shadow-Restore }
 
 Say ''
 Say '  Готово.' 'Green'
