@@ -60,22 +60,82 @@ function ReadText($path) {
 }
 
 # --- ГДЕ ИГРА -------------------------------------------------------------------------------
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$Db   = Join-Path $Root 'database'
+# Игру ищем САМИ, а не требуем положить скрипт в нужное место.
+#
+# Требование «положите в корень игры» выглядит пустяком для того, кто его писал, и работает ровно
+# наоборот для того, кто ставит: человек скачивает файл в Загрузки, запускает оттуда, получает
+# отказ и идёт разбираться, что такое «корень игры». Найти папку самим — работа на тридцать
+# строк, и она снимает единственный шаг, где можно ошибиться.
+#
+# Порядок поиска — от самого надёжного к самому широкому, и на первом попадании останавливаемся.
+function Test-GameRoot($p) {
+    if (-not $p) { return $false }
+    return (Test-Path (Join-Path $p 'fsgame.ltx')) -and (Test-Path (Join-Path $p 'database'))
+}
+
+function Find-Game($startDir) {
+    # 1. Там, откуда запустили, и три уровня вверх: покрывает и «положил в корень игры»,
+    #    и «положил в подпапку игры».
+    $p = $startDir
+    for ($i = 0; $i -lt 4 -and $p; $i++) {
+        if (Test-GameRoot $p) { return $p }
+        $p = Split-Path -Parent $p
+    }
+
+    # 2. Запись установщика игры в реестре. Самый точный источник: путь тот, куда игру
+    #    действительно поставили, а не тот, где её принято держать.
+    foreach ($hive in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+                        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+                        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')) {
+        if (-not (Test-Path $hive)) { continue }
+        try {
+            foreach ($k in Get-ChildItem $hive -ErrorAction SilentlyContinue) {
+                $v = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+                if ($v.DisplayName -and $v.DisplayName -match 'Dead\s*Air' -and $v.InstallLocation) {
+                    if (Test-GameRoot $v.InstallLocation) { return $v.InstallLocation }
+                }
+            }
+        } catch { }
+    }
+
+    # 3. Привычные места. Список короткий намеренно: это подсказка, а не обход диска.
+    $guess = @()
+    foreach ($d in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Free -ne $null } | Select-Object -Expand Root)) {
+        foreach ($sub in @('Games\Dead Air', 'Dead Air', 'Games\S.T.A.L.K.E.R. Dead Air',
+                           'Program Files\Dead Air', 'Program Files (x86)\Dead Air')) {
+            $guess += (Join-Path $d $sub)
+        }
+    }
+    foreach ($g in $guess) { if (Test-GameRoot $g) { return $g } }
+
+    return $null
+}
 
 Say ''
 Say '  Dead Air x64 — модуль анимаций' 'White'
 Say '  ------------------------------' 'DarkGray'
 Say ''
+Say '  Ищу игру...' 'DarkGray'
 
-if (-not (Test-Path (Join-Path $Root 'fsgame.ltx')) -or -not (Test-Path $Db)) {
-    Fail @"
-Скрипт лежит не там.
+$Root = Find-Game (Split-Path -Parent $MyInvocation.MyCommand.Definition)
 
-Положите его в корень установленной игры — туда, где находятся database и fsgame.ltx,
-и запустите оттуда.
-"@
+# 4. Не нашли — спрашиваем. Путь принимаем и в кавычках, и перетаскиванием папки в окно:
+#    оба способа человек применит не задумываясь, и оба должны сработать.
+while (-not (Test-GameRoot $Root)) {
+    Say ''
+    Say '  Не нашёл папку с игрой.' 'Yellow'
+    Say '  Перетащите сюда папку с игрой (ту, где лежит fsgame.ltx) и нажмите Enter,' 'Gray'
+    Say '  либо вставьте путь. Пустая строка — выход.' 'Gray'
+    Say ''
+    $answer = (Read-Host '  Путь').Trim().Trim('"')
+    if (-not $answer) { exit 0 }
+    if (Test-GameRoot $answer) { $Root = $answer; break }
+    Say "  В «$answer» нет fsgame.ltx и database — это не папка с игрой." 'Red'
 }
+
+$Db = Join-Path $Root 'database'
+Say "  Игра найдена: $Root" 'DarkGray'
 
 $Archive = Join-Path $Db $Asset
 $Marker  = Join-Path $Db 'da_animations.txt'
