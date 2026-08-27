@@ -76,11 +76,23 @@ function Test-GameRoot($p) {
 function Find-Game($startDir) {
     # 1. Там, откуда запустили, и три уровня вверх: покрывает и «положил в корень игры»,
     #    и «положил в подпапку игры».
+    #
+    # ⭐ Эта ветка возвращает ответ СРАЗУ и без вопросов — и только она. Если человек запустил
+    # файл из папки игры, он уже сказал, какую игру имеет в виду, и переспрашивать глупо.
+    $script:FoundByLocation = $false
     $p = $startDir
     for ($i = 0; $i -lt 4 -and $p; $i++) {
-        if (Test-GameRoot $p) { return $p }
+        if (Test-GameRoot $p) { $script:FoundByLocation = $true; return $p }
         $p = Split-Path -Parent $p
     }
+
+    # Дальше собираем ВСЕ находки, а не первую попавшуюся.
+    #
+    # 🪤 Установок бывает несколько: рабочая и чистая, старая и новая. Первая попавшаяся — это
+    # лотерея, и проигрыш в ней означает «поставил не туда»: человек запускает игру, анимаций
+    # нет, и он идёт разбираться, хотя установщик отчитался успехом. Проверено на машине
+    # разработчика: запуск из «Загрузок» находил не ту копию.
+    $found = New-Object Collections.ArrayList
 
     # 2. Запись установщика игры в реестре. Самый точный источник: путь тот, куда игру
     #    действительно поставили, а не тот, где её принято держать.
@@ -92,7 +104,9 @@ function Find-Game($startDir) {
             foreach ($k in Get-ChildItem $hive -ErrorAction SilentlyContinue) {
                 $v = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
                 if ($v.DisplayName -and $v.DisplayName -match 'Dead\s*Air' -and $v.InstallLocation) {
-                    if (Test-GameRoot $v.InstallLocation) { return $v.InstallLocation }
+                    if (Test-GameRoot $v.InstallLocation) {
+                        $null = $found.Add(([IO.Path]::GetFullPath($v.InstallLocation)))
+                    }
                 }
             }
         } catch { }
@@ -107,9 +121,27 @@ function Find-Game($startDir) {
             $guess += (Join-Path $d $sub)
         }
     }
-    foreach ($g in $guess) { if (Test-GameRoot $g) { return $g } }
+    foreach ($g in $guess) {
+        if (Test-GameRoot $g) { $null = $found.Add(([IO.Path]::GetFullPath($g))) }
+    }
 
-    return $null
+    # Одна и та же папка приходит и из реестра, и из привычных мест — считаем её одной.
+    $uniq = @($found | Sort-Object -Unique)
+    if ($uniq.Count -eq 0) { return $null }
+    if ($uniq.Count -eq 1) { return $uniq[0] }
+
+    Say ''
+    Say '  Нашёл несколько установок игры. В какую ставить?' 'Yellow'
+    Say ''
+    for ($i = 0; $i -lt $uniq.Count; $i++) { Say ("    {0} — {1}" -f ($i + 1), $uniq[$i]) }
+    Say ''
+    while ($true) {
+        $pick = (Read-Host '  Номер').Trim()
+        if ($pick -match '^\d+$' -and [int]$pick -ge 1 -and [int]$pick -le $uniq.Count) {
+            return $uniq[[int]$pick - 1]
+        }
+        Say '  Введите номер из списка.' 'Red'
+    }
 }
 
 Say ''
@@ -134,8 +166,28 @@ while (-not (Test-GameRoot $Root)) {
     Say "  В «$answer» нет fsgame.ltx и database — это не папка с игрой." 'Red'
 }
 
+# Подтверждаем находку — но ТОЛЬКО если нашли её не по месту запуска.
+#
+# Запустил из папки игры — вопросов нет, человек уже показал, куда ставить. А вот путь, добытый
+# из реестра или угаданный по привычным местам, стоит показать и дать поправить: копий игры
+# бывает несколько, и «поставил не туда» — беда тихая. Установщик отчитается успехом, анимаций
+# в игре не будет, и человек пойдёт искать причину не там. Одно нажатие Enter против этого дёшево.
+if (-not $script:FoundByLocation) {
+    Say ''
+    Say "  Нашёл игру здесь: $Root" 'White'
+    Say '  Enter — ставить сюда. Или укажите другую папку (можно перетащить её в окно).' 'DarkGray'
+    Say ''
+    while ($true) {
+        $other = (Read-Host '  Папка').Trim().Trim('"')
+        if (-not $other) { break }
+        if (Test-GameRoot $other) { $Root = $other; break }
+        Say "  В «$other» нет fsgame.ltx и database — это не папка с игрой." 'Red'
+    }
+}
+
 $Db = Join-Path $Root 'database'
-Say "  Игра найдена: $Root" 'DarkGray'
+Say ''
+Say "  Ставлю в: $Root" 'DarkGray'
 
 $Archive = Join-Path $Db $Asset
 $Marker  = Join-Path $Db 'da_animations.txt'
