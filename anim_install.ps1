@@ -330,13 +330,48 @@ if ($installed -and $haveVer -eq $tag -and $choice -eq '1') {
     Say ''; Read-Host 'Enter — выход'; exit 0
 }
 
+# --- КОРОТКИЙ ТЕКСТОВЫЙ ФАЙЛ ИЗ ВЫПУСКА ------------------------------------------------------
+# ⛔ Здесь стоял Net.WebClient.DownloadString, которому таймаут задать НЕЧЕМ. Когда провайдер
+# режет адрес по DPI, соединение не отвергается, а виснет — установщик замирал навсегда.
+# Ровно на этом вставал установщик движка: тот же вызов, та же причина.
+#
+# Сначала пробуем адрес выпуска, затем тот же файл через api.github.com. Этот адрес установщик
+# уже успешно опросил выше, значит он доступен, а objects.githubusercontent режут чаще.
+#
+# ⚠️ Accept и User-Agent — ограниченные заголовки: через .Headers они БРОСАЮТ исключение,
+# и ошибка кода прикидывается обрывом связи. Ставятся только свойствами.
+function Get-Text($asset, $ua, $timeoutMs = 20000) {
+    $tries = @(
+        @{ u = $asset.browser_download_url; a = $null },
+        @{ u = "https://api.github.com/repos/$Owner/$Repo/releases/assets/$($asset.id)"
+           a = 'application/octet-stream' }
+    )
+    $last = ''
+    foreach ($t in $tries) {
+        if (-not $t.u) { continue }
+        try {
+            $req = [Net.HttpWebRequest]::Create($t.u)
+            $req.UserAgent = $ua
+            if ($t.a) { $req.Accept = $t.a }
+            $req.Timeout = $timeoutMs
+            $req.ReadWriteTimeout = $timeoutMs
+            $resp = $req.GetResponse()
+            try {
+                $sr = New-Object IO.StreamReader($resp.GetResponseStream())
+                return $sr.ReadToEnd()
+            } finally { $resp.Close() }
+        } catch { $last = $_.Exception.Message }
+    }
+    throw "ни по адресу выпуска, ни через api.github.com. $last"
+}
+
 # --- СУММА ----------------------------------------------------------------------------------
 # Битый архив — это не «наверное, обойдётся»: часть моделей прочитается, а на второй половине
 # игра свалится в загрузке, и виноват будет якобы движок.
 $wantHash = $null
 if ($s) {
     try {
-        $txt = (New-Object Net.WebClient).DownloadString($s.browser_download_url)
+        $txt = Get-Text $s 'DeadAir-x64-Animation'
         foreach ($line in $txt -split "`n") {
             if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $Asset) {
                 $wantHash = $Matches[1].ToLower()
